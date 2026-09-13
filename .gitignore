@@ -16,6 +16,8 @@ docs/private/
 
 # ─── Go ────────────────────────────────────────────────────────────────────────
 /dropin-miner
+# `go build ./tools/...` from the root drops this here, same as the line above.
+/releasecheck
 /bin/
 /dist/
 /build/
