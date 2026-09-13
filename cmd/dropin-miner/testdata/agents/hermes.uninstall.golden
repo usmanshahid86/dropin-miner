@@ -1,0 +1,14 @@
+{
+  "writes": [
+    {
+      "surface": "Hermes",
+      "path": "/home/u/.hermes/config.yaml",
+      "mode": 384,
+      "why": "remove lineage hook",
+      "content": ""
+    }
+  ],
+  "removes": [
+    "/home/u/.hermes/skills/dropin-miner"
+  ]
+}
