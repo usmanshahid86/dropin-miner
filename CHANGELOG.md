@@ -13,6 +13,65 @@ An entry describes the release it sits under, as that release behaved. A later r
 superseding something does not make the older entry wrong, and older entries are not
 rewritten to match newer behaviour; the newer entry says what changed.
 
+## v0.2.8 — 2026-09-13
+
+- **Releases are published by the repository now, not by hand.** Pushing an annotated
+  `vX.Y.Z` tag is the whole of a maintainer's part in a release; everything after it —
+  the six platform binaries, the GitHub Release, the npm wrapper — runs in CI. Which
+  commit gets released is still a person's decision and deliberately stays one. What
+  changed is the mechanical half, because that is where the mistakes actually came from:
+  v0.2.1 and v0.2.2 both shipped with `npm/package.json` a version behind the tag they
+  were cut as, and nothing noticed either time.
+
+- **A tag is now refused before anything is built if it is not a release.** A tag whose
+  commit is not on `main`, a tag that is not annotated, a tag whose commit's
+  `npm/package.json` does not say the version the tag names, and a tag with no matching
+  `## vX.Y.Z` heading in this file are each rejected at the start of the run: no GitHub
+  Release is created and nothing reaches npm. The ancestry check is the one worth
+  calling out to an operator — a valid-looking version tag pointing at some commit in
+  the repository is not a release, and the ability to create a tag is not by itself the
+  ability to publish under this project's name.
+
+- **What gets published is checked against what should have been.** The GitHub Release
+  is read back and required to carry exactly the expected assets — the six platform
+  archives and `checksums.txt`, no more and no fewer — before the npm wrapper is
+  published. The wrapper holds no binary of its own; it downloads one of those archives
+  and verifies it against that `checksums.txt`, so publishing it against an incomplete
+  release would ship a package that cannot install, in a version npm does not allow
+  anyone to withdraw. Once published, the package is then installed from the registry
+  into a fresh directory on Ubuntu, macOS and Windows, and the binary each install
+  produces must report `dropin-miner X.Y.Z` for the release to pass. That is the only
+  check in the chain that runs the released binary rather than comparing one version
+  string to another.
+
+- **A release's notes now open with a link to this file as it stood at that tag.** The
+  GitHub Release body is a list of commit subjects, which is the mechanical record and
+  worth keeping; it is not the handful of things a participant should be told in plain
+  language. The two never pointed at each other, and the Release is where people
+  actually land, since it carries the `Latest` badge and every installer points at it.
+
+- **Annotated tags are the convention from this release on.** An annotated tag records
+  who cut a release and when; a lightweight one is a bare pointer, and that record then
+  survives only in the push event. Tags up to v0.2.7 are mixed and are left exactly as
+  they are — retagging a published release would move refs that `install.sh`,
+  `install.ps1`, `npm/install.js` and an already-published `checksums.txt` resolve
+  against, for a cosmetic gain.
+
+- **Operational note on the npm credential.** Publication for this release authenticated
+  with an npm access token held as a **repository** secret in GitHub Actions, scoped to
+  this package. It is a bridge, and it is being treated as one: the token is revoked
+  once this release is out rather than left in place. npm Trusted Publishing, which
+  removes the long-lived credential entirely, is the intended replacement and is not in
+  place yet — package-side authorization for it is not available to this project today.
+  None of this changes what is published or how it is verified; it is recorded here
+  because a publishing credential's lifetime is an operator's business.
+
+- **No client behaviour changed.** Nothing under `cmd/` or `pkg/` differs from v0.2.7:
+  the whole difference between the two tags is the release workflow, the release tooling
+  it runs, and the documents describing them. Upgrading from 0.2.7 to 0.2.8 gets a
+  binary that behaves identically. This release is deliberately that shape — the first
+  run of a new release process belongs on a release where nothing else can go wrong.
+
 ## v0.2.7 — 2026-09-13
 
 - **`dropin-miner help` describes the binary that actually shipped.** 0.2.6 added the
