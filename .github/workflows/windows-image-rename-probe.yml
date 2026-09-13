@@ -1,0 +1,40 @@
+name: windows-image-rename-probe
+# Throwaway evidence for PR C (spike/windows-image-rename). Never merged.
+on:
+  pull_request:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - name: Runner evidence
+        shell: pwsh
+        run: |
+          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion RUNNER_TEMP=$env:RUNNER_TEMP USERPROFILE=$env:USERPROFILE"
+          Get-ComputerInfo -Property OsName,OsVersion,OsBuildNumber,OsArchitecture,WindowsVersion | Format-List | Out-String
+          try { Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,OnAccessProtectionEnabled,BehaviorMonitorEnabled,IsTamperProtected,AMProductVersion | Format-List | Out-String } catch { "Get-MpComputerStatus failed: $_" }
+          try { Get-MpPreference | Select-Object DisableRealtimeMonitoring,ExclusionPath | Format-List | Out-String } catch { "Get-MpPreference failed: $_" }
+          Get-Volume | Where-Object DriveLetter | Format-Table DriveLetter,FileSystem,FileSystemLabel,Size | Out-String
+          fsutil 8dot3name query C: | Out-String
+          if ($env:RUNNER_TEMP) { fsutil 8dot3name query ($env:RUNNER_TEMP.Substring(0,2)) | Out-String }
+          go version
+      - name: Build probe
+        working-directory: .winprobe
+        run: go build -o bin\winprobe.exe .
+      - name: Run probe
+        working-directory: .winprobe
+        shell: pwsh
+        run: .\bin\winprobe.exe run -out "probe-${{ matrix.os }}.json" "$env:RUNNER_TEMP" "$env:USERPROFILE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.os }}
+          path: .winprobe/probe-*.json
