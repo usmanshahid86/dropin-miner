@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/twilight-project/dropin-miner/internal/selfupdate"
 )
 
 // goreleaserFixture is the repository's current naming contract, written
@@ -41,6 +44,44 @@ var wantAssets028 = []string{
 	"dropin-miner_0.2.8_linux_arm64.tar.gz",
 	"dropin-miner_0.2.8_windows_amd64.zip",
 	"dropin-miner_0.2.8_windows_arm64.zip",
+}
+
+// The runtime updater intentionally does not embed GoReleaser's template
+// interpreter. This test is the coupling point: every runtime name must match
+// the source release contract, so changing .goreleaser.yaml alone fails the
+// release gate before it can strand installed clients on obsolete names.
+func TestSelfUpdaterAssetNamesMatchGoReleaser(t *testing.T) {
+	real, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := ParseNamingContract(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := mustParseTag(t, "v0.2.8")
+	want, err := contract.ExpectedAssets(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeVersion, err := selfupdate.ParseVersion(v.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{selfupdate.ChecksumAssetName}
+	for _, goos := range contract.GOOS {
+		for _, goarch := range contract.GOARCH {
+			artifact, err := selfupdate.ArtifactFor(runtimeVersion, goos, goarch)
+			if err != nil {
+				t.Fatalf("runtime updater refuses GoReleaser target %s/%s: %v", goos, goarch, err)
+			}
+			got = append(got, artifact.ArchiveName)
+		}
+	}
+	sort.Strings(got)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("self-updater and .goreleaser.yaml disagree\n updater: %v\n release: %v", got, want)
+	}
 }
 
 func expectedAssetsFor(t *testing.T, yaml, tag string) ([]string, error) {

@@ -48,6 +48,9 @@ the tool (what an agent runs):
              searches into the spool, submit. Started by search and by the
              session hooks; run it by hand to see what is pending
              (-force asks the AS even if the last flush just did)
+  upgrade    install the latest stable GitHub release; -version X.Y.Z selects
+             an exact forward version and -rollback restores the one validated
+             previous binary. npm-managed installs must be upgraded with npm
 
 onboarding (one-time, per agent): register with the search platform, claim
 it at one URL, done. search works the moment connect stores the key,
@@ -138,6 +141,8 @@ func dispatch(name string, args []string) int {
 		return cmdHook(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "flush":
 		return cmdFlush(args, os.Stdout, os.Stderr, os.Getenv)
+	case "upgrade":
+		return cmdUpgrade(args, os.Stdout, os.Stderr)
 	case "login":
 		return cmdLogin(args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 	case "connect":
