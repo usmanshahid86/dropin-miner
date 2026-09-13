@@ -1,22 +1,383 @@
+# Everything after a human pushes an approved annotated tag.
+#
+# The boundary this workflow deliberately does not cross: which commit is
+# released stays a human decision, made by creating and pushing
+# `git tag -a vX.Y.Z -m "vX.Y.Z" <commit>`. Nothing here creates, moves or
+# deletes a tag. What follows the tag is mechanical, and mechanical work
+# done by hand is where the release mistakes have actually come from —
+# v0.2.1 and v0.2.2 both shipped with npm/package.json a version behind,
+# and nothing looked.
+#
+# The order is a dependency chain, not a preference. The npm wrapper
+# carries no binary: its postinstall downloads the GitHub Release's
+# archive and checksums it. So the release has to exist, and be complete,
+# before the wrapper that points at it is published — and an npm version,
+# once published, cannot be taken back.
+#
+#   preflight         is this tag allowed to become a release at all
+#   release-binaries  goreleaser builds and publishes the GitHub Release
+#   verify-release    the release is read back and checked, asset by asset
+#   publish-npm       only then, and only this job sees the credential
+#   smoke-npm         install the published package on three OSes and run it
+#
+# The substantive checks live in tools/releasecheck, a small Go program
+# with tests, rather than in shell embedded here: a release gate nobody
+# can run except by cutting a release is a gate nobody has tested.
+# See docs/RELEASING.md for the human half and for the repository
+# settings this workflow assumes.
 name: release
+
 on:
   push:
     tags: ["v*"]
+
+# Least privilege by default. Exactly one job raises this, and only to
+# what goreleaser needs to create a release.
 permissions:
-  contents: write
+  contents: read
+
+# One release at a time per tag, and never cancelled mid-flight: the
+# stages after goreleaser are the ones that must not be interrupted
+# half-done.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  goreleaser:
+  preflight:
+    name: preflight
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.preflight.outputs.version }}
+      commit: ${{ steps.preflight.outputs.commit }}
+      release_state: ${{ steps.state.outputs.state }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@v6
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # The tag object itself, from the server. actions/checkout resolves
+      # the ref it was given; this makes certain the annotated tag object
+      # is present locally, because "is this tag annotated" is a question
+      # about the object the server holds, not about whatever the
+      # checkout happened to materialise.
+      - name: Fetch the tag object
+        run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      # Canonical main, fetched explicitly and named explicitly. This
+      # workflow runs in the canonical repository, so `origin` is
+      # canonical; it is still fetched fresh rather than inferred from
+      # the checkout branch (which is the tag itself on a tag push) or
+      # from whatever a previous step left in a local ref.
+      - name: Fetch canonical main
+        run: git fetch --no-tags --force origin "+refs/heads/main:refs/remotes/canonical/main"
+
+      # Tag syntax, annotated tag, the tagged commit's ancestry in
+      # canonical main, npm/package.json's version at the tag,
+      # CHANGELOG.md's heading at the tag, and .goreleaser.yaml and
+      # npm/install.js still naming the same assets. Every file is read
+      # out of the tag, never out of the worktree beside it.
+      - name: Validate the tag and the commit it releases
+        id: preflight
+        run: |
+          go run ./tools/releasecheck preflight \
+            -tag "${GITHUB_REF_NAME}" \
+            -repo . \
+            -canonical-ref refs/remotes/canonical/main
+
+      # The packaging step that has to work before anything is published.
+      # `npm pack ./npm` and not `npm --prefix npm pack`: --prefix sets
+      # the install prefix, not the pack target, so the latter reads
+      # package.json from the repository root and fails with ENOENT.
+      - name: npm package dry-run
+        run: npm pack ./npm --dry-run
+
+      # Is there already a GitHub Release for this tag? A rerun after a
+      # partial failure must resume rather than rebuild, and that
+      # decision needs the release's actual asset list. A missing release
+      # is a state; anything else gh says is an error worth stopping for.
+      - name: Read the GitHub Release for this tag, if one exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          assets="$(gh release view "${GITHUB_REF_NAME}" --json assets 2>gh-err.txt)"
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            printf '%s' "$assets" > release.json
+          elif grep -qi "release not found" gh-err.txt; then
+            : > release.json
+          else
+            echo "gh could not tell us whether a release exists, which is not the same as there being none:" >&2
+            cat gh-err.txt >&2
+            exit 1
+          fi
+
+      # absent -> build it. complete -> a rerun after the release
+      # succeeded and something later failed, so skip goreleaser
+      # entirely. partial -> stop; see docs/RELEASING.md.
+      - name: First run, or resume?
+        id: state
+        run: |
+          go run ./tools/releasecheck release-state \
+            -tag "${GITHUB_REF_NAME}" -repo . -have release.json
+
+  release-binaries:
+    name: GitHub Release
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      # The one place this workflow writes to the repository, and the
+      # only reason any job needs more than read.
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: The release already exists and is complete
+        if: needs.preflight.outputs.release_state == 'complete'
+        run: |
+          echo "A complete GitHub Release for ${GITHUB_REF_NAME} already exists; goreleaser is skipped."
+          echo "Re-running it would replace assets a published npm package may already be downloading."
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        if: needs.preflight.outputs.release_state == 'absent'
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-release:
+    name: verify release assets
+    needs: [preflight, release-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch the tag object
+        run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      # Read back from the API rather than trusting that goreleaser
+      # exited zero. This is the gate the npm wrapper depends on: it has
+      # no binary of its own, so publishing it before all six archives
+      # and checksums.txt are attached would ship a package that cannot
+      # install, in a version that cannot be withdrawn.
+      - name: Read the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "${GITHUB_REF_NAME}" --json assets > release.json
+
+      - name: The release carries exactly the expected assets
+        run: |
+          go run ./tools/releasecheck verify-assets \
+            -tag "${GITHUB_REF_NAME}" -repo . -have release.json
+
+  publish-npm:
+    name: publish to npm
+    needs: [preflight, verify-release]
+    runs-on: ubuntu-latest
+    # The credential boundary. NPM_TOKEN lives in this environment and
+    # nowhere else, so it is handed only to a job that declares the
+    # environment and satisfies its protection rules — which is also what
+    # makes the boundary survive a workflow file that tried to drop the
+    # ancestry check, since such a file would not be given the token
+    # either. See docs/RELEASING.md.
+    environment: release
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      # This job needs the tag's npm/ directory and nothing else from git.
+      # persist-credentials: false keeps the GITHUB_TOKEN out of
+      # .git/config for the life of the job — this is the one job holding
+      # a publishing credential, and the fewer credentials in reach of
+      # anything it runs, the better.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # npm versions are immutable, so a rerun must find out whether this
+      # one is already there before trying. "Already there" is not by
+      # itself proof it is the right thing, which is what the next step
+      # is for — and the cross-platform smoke below remains required
+      # either way.
+      - name: Is this version already on npm?
+        id: registry
+        run: |
+          set +e
+          npm view "dropin-miner@${VERSION}" version > npm-view.txt 2> npm-view-err.txt
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "dropin-miner@${VERSION} is already on the registry."
+          elif grep -q "E404" npm-view-err.txt; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "dropin-miner@${VERSION} is not on the registry yet."
+          else
+            echo "npm could not tell us whether this version exists:" >&2
+            cat npm-view-err.txt >&2
+            exit 1
+          fi
+
+      # The published version has to be the package this tag describes,
+      # not merely a package with the right number. Compared by content
+      # rather than by tarball checksum: the extracted file set is what
+      # anyone installing actually receives, and it does not move when
+      # npm changes how it builds a tarball.
+      - name: The already-published version is the one this tag would publish
+        if: steps.registry.outputs.published == 'true'
+        run: |
+          tmp="$(mktemp -d)"
+          npm pack "dropin-miner@${VERSION}" --pack-destination "$tmp" > /dev/null
+          tar -xzf "$tmp/dropin-miner-${VERSION}.tgz" -C "$tmp"
+          if ! diff -r "$tmp/package" npm; then
+            echo "" >&2
+            echo "dropin-miner@${VERSION} is already on npm but is not what this tag would publish." >&2
+            echo "Nothing is republished: an npm version is immutable. Diagnose before re-running." >&2
+            rm -rf "$tmp"
+            exit 1
+          fi
+          rm -rf "$tmp"
+          echo "The published ${VERSION} matches npm/ at this tag; publication is already done."
+
+      # The version published is the one already committed at the tag.
+      # Nothing here bumps a version, commits, or pushes: the release PR
+      # put the number in the commit before the tag existed, and
+      # preflight has already checked that it did.
+      #
+      # --ignore-scripts so publishing never executes a lifecycle script
+      # from the package while the credential is in the environment; the
+      # package's own postinstall still ships and still runs for whoever
+      # installs it.
+      - name: npm publish
+        if: steps.registry.outputs.published == 'false'
+        env:
+          # Read by the .npmrc actions/setup-node wrote. The token is
+          # never an argument and is never echoed.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./npm --access public --ignore-scripts
+
+  smoke-npm:
+    name: clean install (${{ matrix.os }})
+    needs: [preflight, publish-npm]
+    strategy:
+      # Every platform's result is wanted: which ones fail is the
+      # diagnosis.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    # Git Bash is present on the Windows runner, so the three platforms
+    # run the same script and differ only in what the package does.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Only ./tools/releasecheck is wanted from the checkout; this job
+      # runs no git command at all, and it is the job that executes a
+      # freshly published package downloaded from the internet. It gets
+      # no repository credential.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # v0.2.7 showed why this is a poll and not a lookup: for about
+      # twenty seconds after a successful publish the registry still
+      # served the previous version. A stale first answer is propagation,
+      # not a failed release. An answer that never arrives is a failure,
+      # so the wait is bounded.
+      - name: Wait for the registry to serve this exact version
+        run: |
+          deadline=$(( $(date +%s) + 600 ))
+          attempt=0
+          until [ "$(npm view "dropin-miner@${VERSION}" version 2>/dev/null)" = "${VERSION}" ]; do
+            attempt=$(( attempt + 1 ))
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "dropin-miner@${VERSION} was not observable on the registry within 600s ($attempt attempts)." >&2
+              echo "The publish step reported success, so this is a registry or a package-state problem," >&2
+              echo "not something to fix by publishing again: the version is immutable." >&2
+              npm view dropin-miner versions --json >&2 || true
+              exit 1
+            fi
+            echo "attempt ${attempt}: not visible yet, waiting"
+            sleep 10
+          done
+          echo "dropin-miner@${VERSION} is visible after ${attempt} retries"
+
+      # The whole path, end to end, on a machine that has never seen this
+      # package: npm install, the package's own postinstall choosing the
+      # platform archive, downloading it from the GitHub Release,
+      # checking it against checksums.txt, unpacking it — and then the
+      # binary that came out saying what it is.
+      #
+      # --no-install is what makes this a test of the install: without
+      # it, npx would happily fetch the package itself and report a
+      # version even if the install above had produced nothing.
+      #
+      # Every path here stays inside bash and the capture file is written
+      # relative to the workspace. $GITHUB_WORKSPACE is a Windows path
+      # (D:\a\...) that bash cannot cd into, and a bash path (/d/a/...)
+      # is not something the native go.exe in the next step can open, so
+      # neither form is passed across that boundary.
+      - name: Clean-install the published package and run it
+        run: |
+          workspace="$(pwd)"
+          tmp="$(mktemp -d)"
+          echo "installing into $tmp"
+          cd "$tmp"
+          npm init -y > /dev/null
+          npm install "dropin-miner@${VERSION}"
+          version_line="$(npx --no-install dropin-miner version)"
+          cd "$workspace"
+          printf '%s\n' "$version_line" > npm-smoke-version.txt
+          cat npm-smoke-version.txt
+          echo "SMOKE_TMPDIR=$tmp" >> "$GITHUB_ENV"
+
+      - name: The installed binary is the one this tag built
+        run: |
+          go run ./tools/releasecheck smoke \
+            -tag "${GITHUB_REF_NAME}" -file npm-smoke-version.txt
+
+      - name: Remove the temporary install
+        if: always()
+        run: |
+          if [ -n "${SMOKE_TMPDIR:-}" ]; then
+            rm -rf "${SMOKE_TMPDIR}"
+            echo "removed ${SMOKE_TMPDIR}"
+          fi
