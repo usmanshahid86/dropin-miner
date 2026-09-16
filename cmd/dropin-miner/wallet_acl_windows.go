@@ -80,6 +80,9 @@ func inspectWindowsWalletObject(path string) (walletObjectAccess, error) {
 		if err != nil {
 			return acc, fmt.Errorf("entry %d names %q: %w", i, trustees[i], err)
 		}
+		if ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
+			continue
+		}
 		aces = append(aces, walletACE{
 			allow: isAllowACE(ace.Header.AceType),
 			flags: ace.Header.AceFlags,
