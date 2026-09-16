@@ -34,11 +34,13 @@ func probeHelperArgs(bin string, sh execShell) string {
 	run := "-test.run=^TestProbeHexDumpStdinHelperProcess$"
 	switch sh.kind {
 	case shellPowerShell:
-		return "& '" + strings.ReplaceAll(bin, "'", "''") + "' '" + run + "' -test.count=1"
+		// Every argument quoted: an unquoted -test.count=1 reached the helper
+		// as "-test" on the first probe run.
+		return "& '" + strings.ReplaceAll(bin, "'", "''") + "' '" + run + "' '-test.count=1'"
 	case shellCmd:
-		return `"` + bin + `" "` + run + `" -test.count=1`
+		return `"` + bin + `" "` + run + `" "-test.count=1"`
 	default:
-		return "'" + strings.ReplaceAll(bin, "'", `'\''`) + "' '" + run + "' -test.count=1"
+		return "'" + strings.ReplaceAll(bin, "'", `'\''`) + "' '" + run + "' '-test.count=1'"
 	}
 }
 
