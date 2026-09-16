@@ -160,6 +160,28 @@ func skillProseCommandLines(skill string) []string {
 	return out
 }
 
+// goldenHookSpec is the hook entries a host's install writes on goos: the
+// commands follow its declared hook runner, like everything else.
+func goldenHookSpec(t *testing.T, id string, entry binEntry, goos string) hooksSpec {
+	t.Helper()
+	tg, ok := targetByID(installTargets, id)
+	if !ok {
+		t.Fatalf("no target %q", id)
+	}
+	if id == "cursor" {
+		spec, _, err := cursorHooksFor(tg, entry, goos)
+		if err != nil {
+			t.Fatalf("cursor hooks on %s: %v", goos, err)
+		}
+		return spec
+	}
+	spec, err := claudeHooksFor(tg, entry, goos)
+	if err != nil {
+		t.Fatalf("%s hooks on %s: %v", id, goos, err)
+	}
+	return spec
+}
+
 // installedHookFile is the hook file an install writes on an empty machine,
 // as bytes.
 func installedHookFile(t *testing.T, spec hooksSpec, entry binEntry) string {
@@ -393,7 +415,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 		}
 		switch id {
 		case "claude":
-			spec := claudeHooks(entry)
+			spec := goldenHookSpec(t, "claude", entry, goos)
 			file := installedHookFile(t, spec, entry)
 			section("claude: settings.json hook commands, as read back from the file")
 			for _, h := range installedHookCommands(t, file, spec) {
@@ -406,7 +428,7 @@ func renderedHostStrings(t *testing.T, goos string) string {
 				value("rule", r+"\n"+string(literal))
 			}
 		case "cursor":
-			spec := cursorHooks(entry)
+			spec := goldenHookSpec(t, "cursor", entry, goos)
 			file := installedHookFile(t, spec, entry)
 			section("cursor: hooks.json commands, as read back from the file")
 			for _, h := range installedHookCommands(t, file, spec) {

@@ -385,7 +385,9 @@ func (claudeTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 func (t claudeTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.claudeSkill, entry, prefer, "", p)
-	if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, claudeHooks(entry)) {
+	if spec, err := claudeHooksFor(t, entry, runtime.GOOS); err != nil {
+		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+	} else if planHooksMerge(ops, t.Label(), paths.claudeSettings, p, entry, spec) {
 		changed = true
 	}
 	if !changed {
@@ -549,8 +551,17 @@ func (cursorTarget) Detect(ops agentOps, _ agentPaths, _ func(string) string) bo
 func (t cursorTarget) PlanInstall(ops agentOps, paths agentPaths, entry binEntry, _ func(string) string, p *agentPlan) {
 	prefer := readPrefer(ops, entry)
 	changed := planSkill(ops, t, paths.cursorSkill, entry, prefer, "", p)
-	if planHooksMerge(ops, t.Label(), paths.cursorHooks, p, entry, cursorHooks(entry)) {
-		changed = true
+	spec, note, err := cursorHooksFor(t, entry, runtime.GOOS)
+	switch {
+	case err != nil:
+		p.refused = append(p.refused, fmt.Sprintf("%s: %v", t.Label(), err))
+	default:
+		if note != "" {
+			p.notes = append(p.notes, t.Label()+": "+note)
+		}
+		if planHooksMerge(ops, t.Label(), paths.cursorHooks, p, entry, spec) {
+			changed = true
+		}
 	}
 	if !changed {
 		p.skipped = append(p.skipped, t.Label()+": already installed")

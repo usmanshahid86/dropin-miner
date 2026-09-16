@@ -70,27 +70,32 @@ func TestProbePowerShellBridgePrefix(t *testing.T) {
 	defer func() { t.Errorf("PROBE BRIDGE:\n%s", report.String()) }()
 
 	for _, sh := range []execShell{shellWinPS, shellPwsh} {
-		in := newExecInstallation(t)
-		_, search, err := searchBlockForShell(shellPowerShell, in.entry, `{"version":1,"query":"exact query text"}`)
-		if err != nil {
-			t.Fatal(err)
-		}
 		const bridge = "PROBEBRIDGEVALUE"
-		forms := map[string]string{
-			"posix-assignment": "TOKENDROP_TRACE_BRIDGE=" + bridge + " " + search,
-			"env-assignment":   "$env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'\n" + search,
-			"scoped-block":     "& { $env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'; " + search + " }",
-			"scoped-then-clear": "$env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'\n" + search +
-				"\nRemove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue",
+		// One installation per form: a shared router would count the previous
+		// form's request and every row after the first would read wrong.
+		formFor := func(in *execInstallation) map[string]string {
+			_, search, err := searchBlockForShell(shellPowerShell, in.entry, `{"version":1,"query":"exact query text"}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return map[string]string{
+				"posix-assignment": "TOKENDROP_TRACE_BRIDGE=" + bridge + " " + search,
+				"env-assignment":   "$env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'\n" + search,
+				"scoped-block":     "& { $env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'; " + search + " }",
+				"scoped-then-clear": "$env:TOKENDROP_TRACE_BRIDGE='" + bridge + "'\n" + search +
+					"\nRemove-Item Env:TOKENDROP_TRACE_BRIDGE -ErrorAction SilentlyContinue",
+			}
 		}
 		for _, name := range []string{"posix-assignment", "env-assignment", "scoped-block", "scoped-then-clear"} {
-			script := forms[name] + "\nWrite-Output (\"LEAK=\" + [string]$env:TOKENDROP_TRACE_BRIDGE)"
+			in := newExecInstallation(t)
+			script := formFor(in)[name] + "\nWrite-Output (\"LEAK=\" + [string]$env:TOKENDROP_TRACE_BRIDGE)"
 			out := runInShell(t, sh, script, nil, in.env)
-			reached := "no request"
-			if got := in.router.received(); len(got) == 1 {
-				reached = "request, trace=<nil>"
+			got := in.router.received()
+			reached := fmt.Sprintf("%d requests", len(got))
+			if len(got) == 1 {
+				reached = "1 request, trace=<nil>"
 				if got[0].Trace != nil {
-					reached = "request, harness=" + got[0].Trace.Harness
+					reached = "1 request, harness=" + got[0].Trace.Harness
 				}
 			}
 			leak := "LEAK not printed"

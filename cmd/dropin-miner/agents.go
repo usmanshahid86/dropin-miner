@@ -699,9 +699,26 @@ type hooksSpec struct {
 	allow []string
 }
 
-func claudeHooks(entry binEntry) hooksSpec {
+// claudeToolMatcher is the PreToolUse matcher: both shell tools, not one.
+//
+// Claude Code runs shell commands through the Bash tool and, on Windows,
+// through the PowerShell tool as well — on by default for claude.ai and
+// Console accounts, and the only one where Git for Windows is absent. The
+// matcher is a regular expression over the tool name, and ours named `Bash`
+// alone, so a search the model sent through the PowerShell tool was never
+// offered to this hook and carried no lineage at all (#77). Claude Code's own
+// documentation says to "Match `Bash|PowerShell` in hooks that inspect shell
+// commands"; this is that.
+const claudeToolMatcher = "Bash|PowerShell"
+
+func claudeHooks(entry binEntry, sh shellKind) (hooksSpec, error) {
+	var err error
 	cmd := func(sub ...string) map[string]any {
-		return map[string]any{"type": "command", "command": entry.hookCommand(sub...)}
+		rendered, cmdErr := entry.hookCommandForShell(sh, sub...)
+		if cmdErr != nil && err == nil {
+			err = cmdErr
+		}
+		return map[string]any{"type": "command", "command": rendered}
 	}
 	group := func(matcher string, h map[string]any) map[string]any {
 		g := map[string]any{"hooks": []any{h}}
@@ -710,10 +727,10 @@ func claudeHooks(entry binEntry) hooksSpec {
 		}
 		return g
 	}
-	return hooksSpec{
+	spec := hooksSpec{
 		root: "hooks",
 		entries: map[string]map[string]any{
-			"PreToolUse":   group("Bash", cmd("lineage")),
+			"PreToolUse":   group(claudeToolMatcher, cmd("lineage")),
 			"SessionStart": group("", cmd("window", "session-start")),
 			"PreCompact":   group("", cmd("window", "pre-compact")),
 			"PostCompact":  group("", cmd("window", "post-compact")),
@@ -722,6 +739,7 @@ func claudeHooks(entry binEntry) hooksSpec {
 		order: []string{"PreToolUse", "SessionStart", "PreCompact", "PostCompact", "Stop"},
 		allow: claudeAllowRules(entry),
 	}
+	return spec, err
 }
 
 // claudeAllowRules are the permission rules that let Claude Code run the
@@ -776,13 +794,42 @@ func ruleIsOurs(e any, bin string) bool {
 	return false
 }
 
-func cursorHooks(entry binEntry) hooksSpec {
+func cursorHooks(entry binEntry, shells []shellKind) (hooksSpec, string, error) {
 	events := []string{"sessionStart", "beforeShellExecution", "afterAgentThought", "afterAgentResponse", "preCompact", "stop"}
 	entries := map[string]map[string]any{}
+	note := ""
 	for _, ev := range events {
-		entries[ev] = map[string]any{"command": entry.hookCommand("cursor", ev)}
+		cmd, runnerNote, err := entry.hookCommandForRunners(shells, "cursor", ev)
+		if err != nil {
+			return hooksSpec{}, "", err
+		}
+		note = runnerNote
+		entries[ev] = map[string]any{"command": cmd}
 	}
-	return hooksSpec{root: "hooks", version: 1, entries: entries, order: events}
+	return hooksSpec{root: "hooks", version: 1, entries: entries, order: events}, note, nil
+}
+
+// claudeHooksFor and cursorHooksFor render a host's hook entries for the
+// runner its declaration names on this OS. An unknown cell has no fallback
+// here: a hook command is not a skill, and one written for a shell nobody
+// has shown runs it installs a hook that fails silently — which is #69.
+func claudeHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, error) {
+	shells, err := declaredShells(t, goos, channelHook)
+	if err != nil {
+		return hooksSpec{}, err
+	}
+	if len(shells) != 1 {
+		return hooksSpec{}, fmt.Errorf("its hook runner is declared as %d shells; Claude Code's is one", len(shells))
+	}
+	return claudeHooks(entry, shells[0])
+}
+
+func cursorHooksFor(t installTarget, entry binEntry, goos string) (hooksSpec, string, error) {
+	shells, err := declaredShells(t, goos, channelHook)
+	if err != nil {
+		return hooksSpec{}, "", err
+	}
+	return cursorHooks(entry, shells)
 }
 
 // entryIsOurs: does this hook entry (a Claude group or a Cursor entry)

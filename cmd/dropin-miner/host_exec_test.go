@@ -907,6 +907,12 @@ func TestRulesLineCommandRunsInOpencodesShell(t *testing.T) {
 	}
 }
 
+// hookSpecFor is the hook entries this host's install writes on this runner.
+func hookSpecFor(t *testing.T, host string, entry binEntry) hooksSpec {
+	t.Helper()
+	return goldenHookSpec(t, host, entry, runtime.GOOS)
+}
+
 // hookCase is one installed hook command, run with a real payload, and the
 // observable that proves the binary ran it.
 type hookCase struct {
@@ -1021,10 +1027,7 @@ func TestV029InstalledHookCommandsInEachHookRunner(t *testing.T) {
 			for _, hc := range v029HookCases[host] {
 				t.Run(host+"/"+sh.name+"/"+hc.event, func(t *testing.T) {
 					in := newExecInstallation(t)
-					spec := claudeHooks(in.entry)
-					if host == "cursor" {
-						spec = cursorHooks(in.entry)
-					}
+					spec := hookSpecFor(t, host, in.entry)
 					command := ""
 					for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
 						if h.event == hc.event {
@@ -1060,7 +1063,7 @@ func TestCursorShellHookRecognizesTheSkillsOwnSearch(t *testing.T) {
 		}
 		t.Run(sh.name, func(t *testing.T) {
 			in := newExecInstallation(t)
-			spec := cursorHooks(in.entry)
+			spec := hookSpecFor(t, "cursor", in.entry)
 			command := ""
 			for _, h := range installedHookCommands(t, installedHookFile(t, spec, in.entry), spec) {
 				if h.event == "beforeShellExecution" {
