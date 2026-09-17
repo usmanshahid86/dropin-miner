@@ -58,8 +58,8 @@ if ($env:TOKENDROP_INSTALL_BIN) {
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     Expand-Archive -Path (Join-Path $tmp $name) -DestinationPath $tmp -Force
     Copy-Item (Join-Path $tmp "dropin-miner.exe") (Join-Path $BinDir "dropin-miner.exe") -Force
+    Remove-Item -Recurse -Force $tmp
   } finally {
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
   }
   $exe = Join-Path $BinDir "dropin-miner.exe"
 }
