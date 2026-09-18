@@ -53,5 +53,6 @@ func fileInUse(err error) bool {
 // file, a missing path, an existing target and a write-protected volume are
 // none of them transient, and none is retried.
 func transientlyHeld(err error) bool {
-	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_ACCESS_DENIED)
+	_ = err
+	return false
 }
