@@ -19,6 +19,11 @@ jobs:
         with:
           node-version: "22"
       - run: go vet ./...
+      - name: K6 probe, the Windows-only tests run verbosely and are counted
+        shell: bash
+        run: |
+          go test -count=1 -v -run 'TestOnWindows|TestNothingIsTransientlyHeldOffWindows|TestAMoveAside' ./internal/selfupdate 2>&1 | tee k6.log
+          echo "K6-COUNT os=${{ matrix.os }} windows_pass=$(grep -c -- '^--- PASS: TestOnWindows' k6.log) windows_fail=$(grep -c -- '^--- FAIL: TestOnWindows' k6.log) skip=$(grep -c -- '^--- SKIP' k6.log) logged=$(grep -c 'K6-WINDOWS' k6.log)"
       - run: go test -count=1 ./...
       - run: go build -trimpath -o /dev/null ./cmd/dropin-miner
         if: runner.os != 'Windows'
