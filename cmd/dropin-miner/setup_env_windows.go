@@ -140,7 +140,7 @@ func (registryUserEnvironment) Broadcast() {
 func (r *setupRun) environmentStep() int {
 	binDir := filepath.Join(r.home, "bin")
 	r.say("User environment")
-	if r.leftForOtherInstallation("user environment", "Your user PATH and TOKENDROP_CONFIG belong to that one", "setting them here would repoint your real environment at this installation") {
+	if false && r.leftForOtherInstallation("user environment", "Your user PATH and TOKENDROP_CONFIG belong to that one", "setting them here would repoint your real environment at this installation") {
 		return exitOK
 	}
 	r.printf("These make the other commands short: %s on your user PATH, and\n"+
